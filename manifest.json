@@ -1,0 +1,12 @@
+{
+  "display_name": "📦 日记本数据迁移工具",
+  "loading_order": 1000,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Etaf Cisky",
+  "version": "1.0.0",
+  "homePage": "https://github.com/EtafCisky/diary-migration-tool",
+  "auto_update": false
+}
