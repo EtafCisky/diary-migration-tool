@@ -73,6 +73,14 @@ function getExchangeStats(exchangeDiaries) {
   };
 }
 
+function getSettingsDataCount(target, data) {
+  if (target.settingsKey === 'exchangeDiaries') {
+    return getExchangeStats(data).threads;
+  }
+
+  return getGroupedItemCount(data);
+}
+
 function bytesToBase64(bytes) {
   let binary = '';
   const chunkSize = 0x8000;
@@ -546,9 +554,11 @@ async function runWorldToSettingsMigration() {
 async function runSettingsToFilesMigration() {
   const settings = getTargetSettings();
   const results = [];
+  const removedSettingsData = {};
 
   for (const target of Object.values(FILE_TARGETS)) {
     const settingsData = isPlainObject(settings[target.settingsKey]) ? settings[target.settingsKey] : {};
+    removedSettingsData[target.settingsKey] = getSettingsDataCount(target, settingsData);
     const exists = await fileExists(target);
     const existingFileData = exists ? await readJsonFile(target) : {};
     let mergeResult;
@@ -591,9 +601,15 @@ async function runSettingsToFilesMigration() {
     });
   }
 
+  Object.values(FILE_TARGETS).forEach(target => {
+    delete settings[target.settingsKey];
+  });
+  saveSettingsDebounced();
+
   return {
     mode: MODES.settingsToFiles,
     files: results,
+    removedSettingsData,
   };
 }
 
@@ -608,8 +624,9 @@ function buildCheckText(mode) {
       `settings 中普通日记：${getGroupedItemCount(diaries)} 篇，角色 ${getObjectCount(diaries)} 个`,
       `settings 中交换日记：${exchangeStats.threads} 个系列，${exchangeStats.entries} 个条目`,
       `settings 中回收站：${getGroupedItemCount(recycleBin)} 条，角色 ${getObjectCount(recycleBin)} 个`,
-      '执行后会写入 user/files 下的 3 个独立 JSON 文件，不删除 settings 里的旧数据。',
+      '执行后会写入 user/files 下的 3 个独立 JSON 文件。',
       '如果目标文件已经存在，工具会先读取已有文件，再把 settings 数据合并进去；能识别的重复日记会跳过。',
+      '三份文件全部写入成功后，会删除 settings 里的普通日记、交换日记、回收站旧数据；不会删除主题、预设等其它插件设置。',
     ].join('\n');
   }
 
@@ -657,6 +674,8 @@ async function runSelectedMigration() {
 
         return parts.join('，');
       }),
+      `已删除 settings 旧数据：普通日记 ${result.removedSettingsData.diaries || 0} 条，交换日记 ${result.removedSettingsData.exchangeDiaries || 0} 个系列，回收站 ${result.removedSettingsData.recycleBin || 0} 条`,
+      '已保留主题、预设、自动日记等其它 settings 配置。',
     ].join('\n');
   }
 
