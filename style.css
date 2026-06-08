@@ -1,256 +1,72 @@
-/**
- * 日记本数据迁移工具 - 现代科技风格
- * 设计理念：简洁、专业、高科技感
- */
-
-.migration-tool-settings {
-  position: relative;
-  padding: 0;
-  margin: 30px 0;
-  background: linear-gradient(145deg, #1a1a2e 0%, #16213e 100%);
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.4),
-    0 0 0 1px rgba(255, 255, 255, 0.05);
+.diary-migration-tool-settings {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid var(--SmartThemeBorderColor, #555);
+  border-radius: 6px;
+  background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.08));
 }
 
-/* 顶部装饰条 */
-.migration-tool-settings::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-  background: linear-gradient(90deg, #00d4ff 0%, #0099ff 50%, #00d4ff 100%);
-  background-size: 200% 100%;
-  animation: shimmer 3s linear infinite;
+.diary-migration-tool-settings h3 {
+  margin: 0 0 14px;
+  font-size: 18px;
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
-
-/* 标题区域 */
-.migration-tool-settings h3 {
-  margin: 0;
-  padding: 24px 30px;
-  font-size: 22px;
-  font-weight: 600;
-  color: #ffffff;
-  background: rgba(0, 212, 255, 0.05);
-  border-bottom: 1px solid rgba(0, 212, 255, 0.1);
-  display: flex;
+.diary-migration-row {
+  display: grid;
+  grid-template-columns: 96px minmax(180px, 1fr);
+  gap: 10px;
   align-items: center;
-  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.migration-tool-settings h3::before {
-  content: '📦';
-  font-size: 28px;
-  filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.5));
-}
-
-/* 信息卡片 */
-.migration-info {
-  padding: 30px;
-  color: #e0e0e0;
-  line-height: 1.8;
-}
-
-.migration-info p {
-  margin: 0 0 16px 0;
-  font-size: 14px;
-}
-
-.migration-info strong {
-  color: #00d4ff;
+.diary-migration-row label,
+.diary-migration-panel-title {
   font-weight: 600;
-  font-size: 15px;
-  display: inline-block;
-  margin-bottom: 8px;
 }
 
-/* 列表样式 */
-.migration-info ul,
-.migration-info ol {
-  margin: 12px 0 20px 0;
-  padding-left: 0;
-  list-style: none;
+.diary-migration-panel {
+  margin: 12px 0;
 }
 
-.migration-info li {
-  position: relative;
-  padding: 10px 0 10px 32px;
-  margin: 0;
-  font-size: 14px;
-  color: #b8b8b8;
-  transition: color 0.2s ease;
+#diary-migration-check,
+#diary-migration-result {
+  min-height: 72px;
+  margin: 8px 0 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  border: 1px solid var(--SmartThemeBorderColor, #555);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
 }
 
-.migration-info ul li::before {
-  content: '▸';
-  position: absolute;
-  left: 8px;
-  color: #00d4ff;
-  font-size: 16px;
-  font-weight: bold;
-}
-
-.migration-info ol {
-  counter-reset: step-counter;
-}
-
-.migration-info ol li {
-  counter-increment: step-counter;
-}
-
-.migration-info ol li::before {
-  content: counter(step-counter);
-  position: absolute;
-  left: 0;
-  width: 24px;
-  height: 24px;
-  background: linear-gradient(135deg, #00d4ff 0%, #0099ff 100%);
-  color: #ffffff;
-  border-radius: 50%;
+.diary-migration-actions {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: bold;
-  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.3);
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 12px 0;
 }
 
-.migration-info li:hover {
-  color: #ffffff;
-}
-
-/* 分隔线 */
-.migration-info br + p {
-  margin-top: 24px;
-  padding-top: 24px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-/* 按钮区域 */
-.migration-actions {
-  padding: 0 30px 30px 30px;
-  text-align: center;
-}
-
-#start-migration-btn {
-  position: relative;
-  padding: 16px 48px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #ffffff;
-  background: linear-gradient(135deg, #00d4ff 0%, #0099ff 100%);
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  overflow: hidden;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow:
-    0 4px 16px rgba(0, 212, 255, 0.3),
-    0 0 0 1px rgba(0, 212, 255, 0.2);
-  letter-spacing: 0.5px;
-}
-
-/* 按钮光效 */
-#start-migration-btn::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-  transition: left 0.5s ease;
-}
-
-#start-migration-btn:hover::before {
-  left: 100%;
-}
-
-#start-migration-btn:hover {
-  transform: translateY(-2px);
-  box-shadow:
-    0 6px 24px rgba(0, 212, 255, 0.5),
-    0 0 0 1px rgba(0, 212, 255, 0.4);
-}
-
-#start-migration-btn:active {
-  transform: translateY(0);
-  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.3);
-}
-
-/* 禁用状态 */
-#start-migration-btn:disabled {
-  background: linear-gradient(135deg, #4a4a4a 0%, #2a2a2a 100%);
-  color: #888888;
-  cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
-}
-
-#start-migration-btn:disabled::before {
+#diary-migration-result:empty {
   display: none;
 }
 
-/* 加载动画 */
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
+#diary-migration-result.success {
+  border-color: #3fa45b;
 }
 
-#start-migration-btn:disabled {
-  animation: pulse 1.5s ease-in-out infinite;
+#diary-migration-result.error {
+  border-color: #d45555;
 }
 
-/* 响应式设计 */
-@media (max-width: 768px) {
-  .migration-tool-settings h3 {
-    padding: 20px 20px;
-    font-size: 18px;
+@media (max-width: 600px) {
+  .diary-migration-row {
+    grid-template-columns: 1fr;
   }
 
-  .migration-info {
-    padding: 20px;
-  }
-
-  .migration-info p,
-  .migration-info li {
-    font-size: 13px;
-  }
-
-  .migration-actions {
-    padding: 0 20px 20px 20px;
-  }
-
-  #start-migration-btn {
-    padding: 14px 36px;
-    font-size: 15px;
+  .diary-migration-actions .menu_button {
     width: 100%;
-  }
-}
-
-/* 深色模式优化 */
-@media (prefers-color-scheme: dark) {
-  .migration-tool-settings {
-    box-shadow:
-      0 8px 32px rgba(0, 0, 0, 0.6),
-      0 0 0 1px rgba(255, 255, 255, 0.08);
   }
 }

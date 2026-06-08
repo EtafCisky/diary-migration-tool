@@ -1,49 +1,181 @@
-/**
- * ============================================================================
- * 日记本数据迁移工具 (diary-migration-tool)
- * ============================================================================
- *
- * @author    Etaf Cisky
- * @version   1.0.0
- * @description 将旧版日记本插件的世界书数据迁移到新版 extension_settings 存储格式
- *
- * ============================================================================
- * 功能说明
- * ============================================================================
- *
- * 本工具用于一次性迁移数据，迁移完成后可以卸载。
- *
- * 迁移内容：
- * 1. 从"日记本"世界书迁移日记数据
- * 2. 从"回收站"世界书迁移回收站数据
- *
- * ============================================================================
- */
-
-import { saveSettingsDebounced } from '../../../../script.js';
+import { getRequestHeaders, saveSettingsDebounced } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import { loadWorldInfo } from '../../../world-info.js';
 
 const extensionName = 'diary-migration-tool';
 const targetExtensionName = 'sillytavernDIARY';
 
-// 日记内容正则表达式
-const DIARY_REGEX = /<日记>\s*标题：([^\n]+)\s*时间：([^\n]+)\s*内容：([\s\S]*?)\s*<\/日记>/g;
+const MODES = {
+  worldToSettings: 'world-to-settings',
+  settingsToFiles: 'settings-to-files',
+};
 
-/**
- * 解析日记内容
- * @param {string} content - AI生成的内容
- * @returns {Object|null} 解析后的日记数据 {title, time, content}
- */
+const FILE_TARGETS = {
+  diaries: {
+    label: '普通日记',
+    settingsKey: 'diaries',
+    fileName: 'diary-data.json',
+    kind: 'sillytavernDIARY.diaries',
+  },
+  exchangeDiaries: {
+    label: '交换日记',
+    settingsKey: 'exchangeDiaries',
+    fileName: 'diary-exchange-data.json',
+    kind: 'sillytavernDIARY.exchangeDiaries',
+  },
+  recycleBin: {
+    label: '回收站',
+    settingsKey: 'recycleBin',
+    fileName: 'diary-recycle-bin.json',
+    kind: 'sillytavernDIARY.recycleBin',
+  },
+};
+
+const DIARY_REGEX = /<日记>\s*标题[:：]\s*([^\n]+)\s*时间[:：]\s*([^\n]+)\s*内容[:：]\s*([\s\S]*?)\s*<\/日记>/g;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneData(data) {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(data);
+  }
+
+  return JSON.parse(JSON.stringify(data));
+}
+
+function getTargetSettings() {
+  if (!extension_settings[targetExtensionName]) {
+    extension_settings[targetExtensionName] = {};
+  }
+
+  return extension_settings[targetExtensionName];
+}
+
+function getObjectCount(data) {
+  return Object.keys(isPlainObject(data) ? data : {}).length;
+}
+
+function getGroupedItemCount(data) {
+  if (!isPlainObject(data)) {
+    return 0;
+  }
+
+  return Object.values(data).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
+}
+
+function getExchangeStats(exchangeDiaries) {
+  const threads = isPlainObject(exchangeDiaries?.threads) ? exchangeDiaries.threads : {};
+  return {
+    threads: Object.keys(threads).length,
+    entries: Object.values(threads).reduce((sum, thread) => sum + (Array.isArray(thread?.entries) ? thread.entries.length : 0), 0),
+  };
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+function encodeJsonToBase64(data) {
+  return bytesToBase64(new TextEncoder().encode(JSON.stringify(data, null, 2)));
+}
+
+function buildFilePayload(target, data) {
+  return {
+    schemaVersion: 1,
+    kind: target.kind,
+    updatedAt: new Date().toISOString(),
+    data: isPlainObject(data) ? data : {},
+  };
+}
+
+function normalizeFilePath(path) {
+  return String(path || '').replace(/^\/+/, '');
+}
+
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
+async function fileExists(target) {
+  const path = `user/files/${target.fileName}`;
+  const response = await fetch('/api/files/verify', {
+    method: 'POST',
+    headers: getRequestHeaders(),
+    body: JSON.stringify({ urls: [path] }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${target.fileName}: 检查文件是否存在失败，HTTP ${response.status} ${await response.text()}`);
+  }
+
+  const result = await response.json();
+  return result[path] === true || result[`/${path}`] === true;
+}
+
+function unwrapFilePayload(target, payload) {
+  if (!isPlainObject(payload)) {
+    throw new Error(`${target.fileName}: 文件内容不是 JSON 对象`);
+  }
+
+  if (payload.kind === target.kind && isPlainObject(payload.data)) {
+    return cloneData(payload.data);
+  }
+
+  if (payload.schemaVersion !== undefined || payload.kind !== undefined || payload.data !== undefined) {
+    throw new Error(`${target.fileName}: 文件格式不是日记本 ${target.label} 数据`);
+  }
+
+  return cloneData(payload);
+}
+
+async function readJsonFile(target) {
+  const path = `user/files/${target.fileName}`;
+  const response = await fetch(`/${path}?diaryMigration=${Date.now()}`, {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    throw new Error(`${target.fileName}: 读取已有文件失败，HTTP ${response.status} ${await response.text()}`);
+  }
+
+  return unwrapFilePayload(target, await response.json());
+}
+
+async function uploadJsonFile(target, data) {
+  const response = await fetch('/api/files/upload', {
+    method: 'POST',
+    headers: getRequestHeaders(),
+    body: JSON.stringify({
+      name: target.fileName,
+      data: encodeJsonToBase64(buildFilePayload(target, data)),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${target.fileName}: HTTP ${response.status} ${await response.text()}`);
+  }
+
+  const result = await response.json();
+  return normalizeFilePath(result.path || `user/files/${target.fileName}`);
+}
+
 function parseDiaryContent(content) {
-  if (!content) return null;
+  if (!content) {
+    return null;
+  }
 
-  // 重置正则表达式的lastIndex
   DIARY_REGEX.lastIndex = 0;
-
   const match = DIARY_REGEX.exec(content);
   if (!match) {
-    console.log('[迁移工具] 日记格式解析失败');
     return null;
   }
 
@@ -51,333 +183,544 @@ function parseDiaryContent(content) {
   const time = match[2].trim();
   const diaryContent = match[3].trim();
 
-  // 验证内容有效性
   if (!title || !time || !diaryContent) {
-    console.log('[迁移工具] 日记内容不完整');
     return null;
   }
 
-  // 过滤掉模板格式（如 {{标题}}）
   if (title.includes('{{') || time.includes('{{') || diaryContent.includes('{{')) {
-    console.log('[迁移工具] 检测到模板格式，跳过');
     return null;
   }
 
   return {
-    title: title,
-    time: time,
+    title,
+    time,
     content: diaryContent,
   };
 }
 
-/**
- * 从世界书迁移日记数据
- * @returns {Promise<Object>} 迁移后的日记数据
- */
 async function migrateDiariesFromWorldInfo() {
-  console.log('[迁移工具] 开始迁移日记数据...');
+  const worldInfo = await loadWorldInfo('日记本');
+  const migratedDiaries = {};
+  let successCount = 0;
+  let failCount = 0;
 
-  try {
-    // 加载"日记本"世界书
-    const worldInfo = await loadWorldInfo('日记本');
-
-    if (!worldInfo || !worldInfo.entries) {
-      console.log('[迁移工具] 未找到"日记本"世界书');
-      return {};
-    }
-
-    const migratedDiaries = {};
-    let successCount = 0;
-    let failCount = 0;
-
-    // 遍历所有条目
-    for (const uid in worldInfo.entries) {
-      const entry = worldInfo.entries[uid];
-
-      // 获取作者名（从关键字获取）
-      const authorName = entry.key && entry.key.length > 0 ? entry.key[0] : null;
-
-      if (!authorName) {
-        console.warn('[迁移工具] 条目缺少作者名，跳过:', entry.comment);
-        failCount++;
-        continue;
-      }
-
-      // 解析条目名称（格式：标题-时间）
-      const commentParts = entry.comment ? entry.comment.split('-') : [];
-      if (commentParts.length < 2) {
-        console.warn('[迁移工具] 条目名称格式不正确，跳过:', entry.comment);
-        failCount++;
-        continue;
-      }
-
-      const title = commentParts[0].trim();
-      const time = commentParts.slice(1).join('-').trim();
-      const content = entry.content || '';
-
-      // 验证数据完整性
-      if (!title || !time || !content) {
-        console.warn('[迁移工具] 条目数据不完整，跳过:', entry.comment);
-        failCount++;
-        continue;
-      }
-
-      // 初始化角色的日记数组
-      if (!migratedDiaries[authorName]) {
-        migratedDiaries[authorName] = [];
-      }
-
-      // 获取下一个 ID
-      const nextId =
-        migratedDiaries[authorName].length > 0 ? Math.max(...migratedDiaries[authorName].map(d => d.id)) + 1 : 1;
-
-      // 添加日记
-      migratedDiaries[authorName].push({
-        id: nextId,
-        title: title,
-        time: time,
-        content: content,
-        author: authorName,
-        createTime: new Date().toISOString(),
-      });
-
-      successCount++;
-      console.log(`[迁移工具] 迁移日记: ${authorName} - ${title}`);
-    }
-
-    console.log(`[迁移工具] 日记迁移完成: 成功 ${successCount} 篇, 失败 ${failCount} 篇`);
-    return migratedDiaries;
-  } catch (error) {
-    console.error('[迁移工具] 迁移日记数据失败:', error);
-    return {};
+  if (!worldInfo?.entries) {
+    return { data: migratedDiaries, successCount, failCount };
   }
+
+  for (const uid in worldInfo.entries) {
+    const entry = worldInfo.entries[uid];
+    const authorName = Array.isArray(entry.key) && entry.key.length > 0 ? entry.key[0] : null;
+    const commentParts = entry.comment ? entry.comment.split('-') : [];
+
+    if (!authorName || commentParts.length < 2 || !entry.content) {
+      failCount += 1;
+      continue;
+    }
+
+    const title = commentParts[0].trim();
+    const time = commentParts.slice(1).join('-').trim();
+
+    if (!title || !time) {
+      failCount += 1;
+      continue;
+    }
+
+    if (!migratedDiaries[authorName]) {
+      migratedDiaries[authorName] = [];
+    }
+
+    migratedDiaries[authorName].push({
+      id: migratedDiaries[authorName].length + 1,
+      title,
+      time,
+      content: entry.content,
+      author: authorName,
+      createTime: new Date().toISOString(),
+    });
+    successCount += 1;
+  }
+
+  return { data: migratedDiaries, successCount, failCount };
 }
 
-/**
- * 从世界书迁移回收站数据
- * @returns {Promise<Object>} 迁移后的回收站数据
- */
 async function migrateRecycleBinFromWorldInfo() {
-  console.log('[迁移工具] 开始迁移回收站数据...');
+  const worldInfo = await loadWorldInfo('回收站');
+  const migratedRecycleBin = {};
+  let successCount = 0;
+  let failCount = 0;
 
-  try {
-    // 加载"回收站"世界书
-    const worldInfo = await loadWorldInfo('回收站');
-
-    if (!worldInfo || !worldInfo.entries) {
-      console.log('[迁移工具] 未找到"回收站"世界书');
-      return {};
-    }
-
-    const migratedRecycleBin = {};
-    let successCount = 0;
-    let failCount = 0;
-
-    // 遍历所有条目
-    for (const uid in worldInfo.entries) {
-      const entry = worldInfo.entries[uid];
-
-      // 获取作者名（从关键字获取）
-      const authorName = entry.key && entry.key.length > 0 ? entry.key[0] : null;
-
-      if (!authorName) {
-        console.warn('[迁移工具] 回收站条目缺少作者名，跳过:', entry.comment);
-        failCount++;
-        continue;
-      }
-
-      // 验证条目名称格式（格式：作者名-回收站）
-      if (!entry.comment || !entry.comment.includes('-回收站')) {
-        console.warn('[迁移工具] 回收站条目名称格式不正确，跳过:', entry.comment);
-        failCount++;
-        continue;
-      }
-
-      const content = entry.content || '';
-
-      if (!content) {
-        console.warn('[迁移工具] 回收站条目内容为空，跳过:', entry.comment);
-        failCount++;
-        continue;
-      }
-
-      // 初始化角色的回收站数组
-      if (!migratedRecycleBin[authorName]) {
-        migratedRecycleBin[authorName] = [];
-      }
-
-      // 获取下一个 ID
-      const nextId =
-        migratedRecycleBin[authorName].length > 0 ? Math.max(...migratedRecycleBin[authorName].map(r => r.id)) + 1 : 1;
-
-      // 尝试解析日记格式（如果是日记格式失败导致的回收站条目）
-      const parsedDiary = parseDiaryContent(content);
-      const failureReason = parsedDiary ? '日记格式解析失败' : '世界书保存失败';
-
-      // 添加回收站条目
-      migratedRecycleBin[authorName].push({
-        id: nextId,
-        content: content,
-        failureReason: failureReason,
-        saveTime: new Date().toLocaleString('zh-CN'),
-      });
-
-      successCount++;
-      console.log(`[迁移工具] 迁移回收站条目: ${authorName} - ${nextId}`);
-    }
-
-    console.log(`[迁移工具] 回收站迁移完成: 成功 ${successCount} 条, 失败 ${failCount} 条`);
-    return migratedRecycleBin;
-  } catch (error) {
-    console.error('[迁移工具] 迁移回收站数据失败:', error);
-    return {};
+  if (!worldInfo?.entries) {
+    return { data: migratedRecycleBin, successCount, failCount };
   }
+
+  for (const uid in worldInfo.entries) {
+    const entry = worldInfo.entries[uid];
+    const authorName = Array.isArray(entry.key) && entry.key.length > 0 ? entry.key[0] : null;
+
+    if (!authorName || !entry.comment?.includes('-回收站') || !entry.content) {
+      failCount += 1;
+      continue;
+    }
+
+    if (!migratedRecycleBin[authorName]) {
+      migratedRecycleBin[authorName] = [];
+    }
+
+    migratedRecycleBin[authorName].push({
+      id: migratedRecycleBin[authorName].length + 1,
+      content: entry.content,
+      failureReason: parseDiaryContent(entry.content) ? '日记格式解析失败' : '世界书保存失败',
+      saveTime: new Date().toLocaleString('zh-CN'),
+    });
+    successCount += 1;
+  }
+
+  return { data: migratedRecycleBin, successCount, failCount };
 }
 
-/**
- * 执行完整的数据迁移
- */
-async function performMigration() {
-  console.log('[迁移工具] ========== 开始数据迁移 ==========');
+function getMaxNumericId(items) {
+  return (Array.isArray(items) ? items : []).reduce((maxId, item) => Math.max(maxId, Number(item?.id) || 0), 0);
+}
 
-  try {
-    // 检查目标插件是否存在
-    if (!extension_settings[targetExtensionName]) {
-      extension_settings[targetExtensionName] = {};
+function mergeGroupedItems(existingData, importedData, createItem, getDuplicateKey = null) {
+  const merged = cloneData(isPlainObject(existingData) ? existingData : {});
+  let addedCount = 0;
+  let duplicateCount = 0;
+  let sourceCount = 0;
+
+  for (const characterName in isPlainObject(importedData) ? importedData : {}) {
+    const importedItems = Array.isArray(importedData[characterName]) ? importedData[characterName] : [];
+    sourceCount += importedItems.length;
+
+    if (!Array.isArray(merged[characterName])) {
+      merged[characterName] = [];
     }
 
-    // 检查是否已经有数据
-    const existingDiaries = extension_settings[targetExtensionName].diaries || {};
-    const existingRecycleBin = extension_settings[targetExtensionName].recycleBin || {};
+    const seenKeys = new Set(
+      getDuplicateKey
+        ? merged[characterName].map(item => getDuplicateKey(item, characterName)).filter(Boolean)
+        : [],
+    );
+    let nextId = getMaxNumericId(merged[characterName]) + 1;
 
-    const hasDiaries = Object.keys(existingDiaries).length > 0;
-    const hasRecycleBin = Object.keys(existingRecycleBin).length > 0;
-
-    if (hasDiaries || hasRecycleBin) {
-      const confirmOverwrite = confirm(
-        '检测到目标位置已有数据！\n\n' +
-          `现有日记: ${Object.keys(existingDiaries).length} 个角色\n` +
-          `现有回收站: ${Object.keys(existingRecycleBin).length} 个角色\n\n` +
-          '是否继续迁移？（新数据会合并到现有数据中）',
-      );
-
-      if (!confirmOverwrite) {
-        toastr.info('已取消迁移', '迁移工具');
+    importedItems.forEach(item => {
+      const duplicateKey = getDuplicateKey ? getDuplicateKey(item, characterName) : null;
+      if (duplicateKey && seenKeys.has(duplicateKey)) {
+        duplicateCount += 1;
         return;
       }
-    }
 
-    // 迁移日记数据
-    const migratedDiaries = await migrateDiariesFromWorldInfo();
-
-    // 迁移回收站数据
-    const migratedRecycleBin = await migrateRecycleBinFromWorldInfo();
-
-    // 合并数据
-    const finalDiaries = { ...existingDiaries };
-    const finalRecycleBin = { ...existingRecycleBin };
-
-    // 合并日记
-    for (const authorName in migratedDiaries) {
-      if (!finalDiaries[authorName]) {
-        finalDiaries[authorName] = [];
+      const nextItem = createItem(item, nextId, characterName);
+      merged[characterName].push(nextItem);
+      if (duplicateKey) {
+        seenKeys.add(duplicateKey);
       }
-      finalDiaries[authorName].push(...migratedDiaries[authorName]);
-    }
-
-    // 合并回收站
-    for (const authorName in migratedRecycleBin) {
-      if (!finalRecycleBin[authorName]) {
-        finalRecycleBin[authorName] = [];
-      }
-      finalRecycleBin[authorName].push(...migratedRecycleBin[authorName]);
-    }
-
-    // 保存到 extension_settings
-    extension_settings[targetExtensionName].diaries = finalDiaries;
-    extension_settings[targetExtensionName].recycleBin = finalRecycleBin;
-    saveSettingsDebounced();
-
-    // 统计结果
-    const totalDiaries = Object.values(finalDiaries).reduce((sum, arr) => sum + arr.length, 0);
-    const totalRecycleBin = Object.values(finalRecycleBin).reduce((sum, arr) => sum + arr.length, 0);
-
-    console.log('[迁移工具] ========== 迁移完成 ==========');
-    console.log(`[迁移工具] 日记总数: ${totalDiaries}`);
-    console.log(`[迁移工具] 回收站总数: ${totalRecycleBin}`);
-
-    toastr.success(
-      `迁移完成！\n\n` +
-        `日记: ${totalDiaries} 篇\n` +
-        `回收站: ${totalRecycleBin} 条\n\n` +
-        `数据已保存到 extension_settings\n` +
-        `现在可以安全卸载本迁移工具了`,
-      '迁移工具',
-      { timeOut: 10000 },
-    );
-  } catch (error) {
-    console.error('[迁移工具] 迁移过程出错:', error);
-    toastr.error(`迁移失败: ${error.message}`, '迁移工具');
+      nextId += 1;
+      addedCount += 1;
+    });
   }
+
+  return {
+    data: merged,
+    addedCount,
+    duplicateCount,
+    sourceCount,
+    totalCount: getGroupedItemCount(merged),
+  };
 }
 
-/**
- * 插件初始化
- */
-jQuery(async () => {
-  console.log('[迁移工具] 插件加载完成');
+function getDiaryDuplicateKey(item, characterName) {
+  return [
+    normalizeText(characterName),
+    normalizeText(item?.author || characterName),
+    normalizeText(item?.title),
+    normalizeText(item?.time),
+    normalizeText(item?.content),
+  ].join('\u0001');
+}
 
-  // 添加设置UI
-  const settingsHtml = `
-    <div class="migration-tool-settings">
-      <h3>📦 日记本数据迁移工具</h3>
-      <div class="migration-info">
-        <p><strong>功能说明：</strong></p>
-        <p>本工具用于将旧版日记本插件的世界书数据迁移到新版 extension_settings 存储格式。</p>
-        <br>
-        <p><strong>迁移内容：</strong></p>
-        <ul>
-          <li>✅ 从"日记本"世界书迁移日记数据</li>
-          <li>✅ 从"回收站"世界书迁移回收站数据</li>
-        </ul>
-        <br>
-        <p><strong>使用步骤：</strong></p>
-        <ol>
-          <li>确保已安装新版日记本插件（sillytavernDIARY）</li>
-          <li>点击下方"开始迁移"按钮</li>
-          <li>等待迁移完成</li>
-          <li>验证数据迁移成功后，可以卸载本工具</li>
-        </ol>
-        <br>
-        <p><strong>⚠️ 注意事项：</strong></p>
-        <ul>
-          <li>迁移过程不会删除原世界书数据</li>
-          <li>如果目标位置已有数据，新数据会合并进去</li>
-          <li>建议在迁移前备份 SillyTavern 的 settings.json 文件</li>
-          <li>迁移完成后可以安全卸载本工具</li>
-        </ul>
-      </div>
-      <div class="migration-actions">
-        <button id="start-migration-btn" class="menu_button">
-          🚀 开始迁移
-        </button>
-      </div>
-    </div>
-  `;
+function getRecycleBinDuplicateKey(item, characterName) {
+  return [
+    normalizeText(characterName),
+    normalizeText(item?.content),
+    normalizeText(item?.failureReason),
+    normalizeText(item?.saveTime),
+  ].join('\u0001');
+}
 
-  $('#extensions_settings2').append(settingsHtml);
+const DEFAULT_EXCHANGE_DIARIES = {
+  threads: {},
+  config: {
+    enableNotifications: true,
+    triggerWindowMin: 1,
+    triggerWindowMax: 10,
+    maxRerollsPerEntry: 5,
+    ghostwritePrompt: '',
+  },
+  threadCounters: {},
+  triggeredEntries: {},
+};
 
-  // 绑定按钮事件
-  $('#start-migration-btn').on('click', async function () {
-    const $btn = $(this);
-    $btn.prop('disabled', true).text('⏳ 迁移中...');
+function createDefaultExchangeDiaries() {
+  return {
+    threads: {},
+    config: { ...DEFAULT_EXCHANGE_DIARIES.config },
+    threadCounters: {},
+    triggeredEntries: {},
+  };
+}
 
-    try {
-      await performMigration();
-    } finally {
-      $btn.prop('disabled', false).text('🚀 开始迁移');
-    }
+function normalizeExchangeDiaries(data) {
+  const safeData = isPlainObject(data) ? data : {};
+  return {
+    ...createDefaultExchangeDiaries(),
+    ...safeData,
+    threads: isPlainObject(safeData.threads) ? safeData.threads : {},
+    config: {
+      ...DEFAULT_EXCHANGE_DIARIES.config,
+      ...(isPlainObject(safeData.config) ? safeData.config : {}),
+    },
+    threadCounters: isPlainObject(safeData.threadCounters) ? safeData.threadCounters : {},
+    triggeredEntries: isPlainObject(safeData.triggeredEntries) ? safeData.triggeredEntries : {},
+  };
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+
+  if (isPlainObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(',')}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function getExchangeThreadDuplicateKey(thread) {
+  return [
+    normalizeText(thread?.characterName),
+    normalizeText(thread?.threadName),
+    normalizeText(thread?.createdAt),
+    normalizeText(thread?.status),
+    stableStringify(Array.isArray(thread?.entries) ? thread.entries : []),
+  ].join('\u0001');
+}
+
+function getNextExchangeThreadNumber(exchangeDiaries, characterName) {
+  const counterNumber = Number(exchangeDiaries.threadCounters?.[characterName]) || 1;
+  const maxExistingThreadNumber = Object.values(exchangeDiaries.threads || {})
+    .filter(thread => thread?.characterName === characterName)
+    .reduce((maxThreadNumber, thread) => Math.max(maxThreadNumber, Number(thread.threadNumber) || 0), 0);
+
+  return Math.max(counterNumber, maxExistingThreadNumber + 1, 1);
+}
+
+function allocateExchangeThreadId(exchangeDiaries, characterName) {
+  let threadNumber = getNextExchangeThreadNumber(exchangeDiaries, characterName);
+  let threadId = `${characterName}-${threadNumber}`;
+
+  while (exchangeDiaries.threads[threadId]) {
+    threadNumber += 1;
+    threadId = `${characterName}-${threadNumber}`;
+  }
+
+  exchangeDiaries.threadCounters[characterName] = threadNumber + 1;
+  return { threadId, threadNumber };
+}
+
+function updateExchangeThreadCounter(exchangeDiaries, characterName, threadNumber) {
+  const nextThreadNumber = (Number(threadNumber) || 0) + 1;
+  exchangeDiaries.threadCounters[characterName] = Math.max(
+    Number(exchangeDiaries.threadCounters[characterName]) || 1,
+    nextThreadNumber,
+  );
+}
+
+function mergeExchangeDiaries(existingData, importedData) {
+  const merged = normalizeExchangeDiaries(cloneData(existingData));
+  const imported = normalizeExchangeDiaries(importedData);
+  const existingThreadKeys = new Set(Object.values(merged.threads).map(getExchangeThreadDuplicateKey).filter(Boolean));
+  let addedCount = 0;
+  let duplicateCount = 0;
+  let renamedCount = 0;
+
+  merged.config = {
+    ...imported.config,
+    ...merged.config,
+  };
+  merged.triggeredEntries = {
+    ...imported.triggeredEntries,
+    ...merged.triggeredEntries,
+  };
+
+  Object.entries(imported.threadCounters || {}).forEach(([characterName, counter]) => {
+    merged.threadCounters[characterName] = Math.max(
+      Number(merged.threadCounters[characterName]) || 1,
+      Number(counter) || 1,
+    );
   });
 
-  console.log('[迁移工具] UI 初始化完成');
+  Object.entries(imported.threads || {}).forEach(([threadId, thread]) => {
+    const characterName = thread?.characterName || threadId.split('-')[0] || '未知角色';
+    const threadKey = getExchangeThreadDuplicateKey(thread);
+
+    if (threadKey && existingThreadKeys.has(threadKey)) {
+      duplicateCount += 1;
+      return;
+    }
+
+    if (merged.threads[threadId]) {
+      const nextThread = allocateExchangeThreadId(merged, characterName);
+      merged.threads[nextThread.threadId] = {
+        ...thread,
+        threadId: nextThread.threadId,
+        threadNumber: nextThread.threadNumber,
+        characterName,
+      };
+      renamedCount += 1;
+      addedCount += 1;
+      existingThreadKeys.add(threadKey);
+      return;
+    }
+
+    merged.threads[threadId] = {
+      ...thread,
+      threadId,
+      characterName,
+    };
+    updateExchangeThreadCounter(merged, characterName, thread.threadNumber);
+    addedCount += 1;
+    existingThreadKeys.add(threadKey);
+  });
+
+  Object.values(merged.threads || {}).forEach(thread => {
+    updateExchangeThreadCounter(merged, thread.characterName, thread.threadNumber);
+  });
+
+  const sourceStats = getExchangeStats(imported);
+  const totalStats = getExchangeStats(merged);
+  return {
+    data: merged,
+    sourceCount: sourceStats.threads,
+    sourceEntries: sourceStats.entries,
+    addedCount,
+    duplicateCount,
+    renamedCount,
+    totalCount: totalStats.threads,
+    totalEntries: totalStats.entries,
+  };
+}
+
+async function runWorldToSettingsMigration() {
+  const settings = getTargetSettings();
+  const diaryMigration = await migrateDiariesFromWorldInfo();
+  const recycleMigration = await migrateRecycleBinFromWorldInfo();
+
+  settings.diaries = mergeGroupedItems(settings.diaries, diaryMigration.data, (item, id, characterName) => ({
+    ...item,
+    id,
+    author: item.author || characterName,
+    createTime: item.createTime || new Date().toISOString(),
+  })).data;
+
+  settings.recycleBin = mergeGroupedItems(settings.recycleBin, recycleMigration.data, item => ({
+    ...item,
+  })).data;
+
+  saveSettingsDebounced();
+
+  return {
+    mode: MODES.worldToSettings,
+    diaries: diaryMigration,
+    recycleBin: recycleMigration,
+    totalDiaries: getGroupedItemCount(settings.diaries),
+    totalRecycleBin: getGroupedItemCount(settings.recycleBin),
+  };
+}
+
+async function runSettingsToFilesMigration() {
+  const settings = getTargetSettings();
+  const results = [];
+
+  for (const target of Object.values(FILE_TARGETS)) {
+    const settingsData = isPlainObject(settings[target.settingsKey]) ? settings[target.settingsKey] : {};
+    const exists = await fileExists(target);
+    const existingFileData = exists ? await readJsonFile(target) : {};
+    let mergeResult;
+
+    if (target.settingsKey === 'diaries') {
+      mergeResult = mergeGroupedItems(
+        existingFileData,
+        settingsData,
+        (item, id, characterName) => ({
+          ...item,
+          id,
+          author: item.author || characterName,
+          createTime: item.createTime || new Date().toISOString(),
+        }),
+        getDiaryDuplicateKey,
+      );
+    } else if (target.settingsKey === 'recycleBin') {
+      mergeResult = mergeGroupedItems(
+        existingFileData,
+        settingsData,
+        (item, id) => ({
+          ...item,
+          id,
+          saveTime: item.saveTime || new Date().toLocaleString('zh-CN'),
+        }),
+        getRecycleBinDuplicateKey,
+      );
+    } else {
+      mergeResult = mergeExchangeDiaries(existingFileData, settingsData);
+    }
+
+    const path = await uploadJsonFile(target, mergeResult.data);
+    results.push({
+      label: target.label,
+      fileName: target.fileName,
+      path,
+      existed: exists,
+      ...mergeResult,
+      data: undefined,
+    });
+  }
+
+  return {
+    mode: MODES.settingsToFiles,
+    files: results,
+  };
+}
+
+function buildCheckText(mode) {
+  const settings = getTargetSettings();
+  const diaries = settings.diaries || {};
+  const recycleBin = settings.recycleBin || {};
+  const exchangeStats = getExchangeStats(settings.exchangeDiaries);
+
+  if (mode === MODES.settingsToFiles) {
+    return [
+      `settings 中普通日记：${getGroupedItemCount(diaries)} 篇，角色 ${getObjectCount(diaries)} 个`,
+      `settings 中交换日记：${exchangeStats.threads} 个系列，${exchangeStats.entries} 个条目`,
+      `settings 中回收站：${getGroupedItemCount(recycleBin)} 条，角色 ${getObjectCount(recycleBin)} 个`,
+      '执行后会写入 user/files 下的 3 个独立 JSON 文件，不删除 settings 里的旧数据。',
+      '如果目标文件已经存在，工具会先读取已有文件，再把 settings 数据合并进去；能识别的重复日记会跳过。',
+    ].join('\n');
+  }
+
+  return [
+    '将读取世界书“日记本”和“回收站”，合并到 sillytavernDIARY 的 settings 数据中。',
+    `当前 settings 普通日记：${getGroupedItemCount(diaries)} 篇`,
+    `当前 settings 回收站：${getGroupedItemCount(recycleBin)} 条`,
+    '执行后不会删除世界书原始数据。',
+  ].join('\n');
+}
+
+function setResult(text, type = 'info') {
+  $('#diary-migration-result').removeClass('success error info').addClass(type).text(text);
+}
+
+function updateCheckResult() {
+  const mode = $('#diary-migration-mode').val();
+  $('#diary-migration-check').text(buildCheckText(mode));
+  setResult('', 'info');
+}
+
+async function runSelectedMigration() {
+  const mode = $('#diary-migration-mode').val();
+
+  if (mode === MODES.settingsToFiles) {
+    const result = await runSettingsToFilesMigration();
+    return [
+      '文件迁移完成：',
+      ...result.files.map(file => {
+        const parts = [
+          `${file.label} -> ${file.path}`,
+          file.existed ? '已合并已有文件' : '已新建文件',
+          `settings 来源 ${file.sourceCount} 条`,
+          `新增 ${file.addedCount} 条`,
+          `跳过重复 ${file.duplicateCount} 条`,
+          `文件内现有总数 ${file.totalCount} 条`,
+        ];
+
+        if (file.renamedCount) {
+          parts.push(`ID 冲突改名 ${file.renamedCount} 个系列`);
+        }
+        if (file.totalEntries !== undefined) {
+          parts.push(`交换日记条目总数 ${file.totalEntries} 条`);
+        }
+
+        return parts.join('，');
+      }),
+    ].join('\n');
+  }
+
+  const result = await runWorldToSettingsMigration();
+  return [
+    '世界书迁移完成：',
+    `新增普通日记成功 ${result.diaries.successCount} 篇，跳过 ${result.diaries.failCount} 篇`,
+    `新增回收站成功 ${result.recycleBin.successCount} 条，跳过 ${result.recycleBin.failCount} 条`,
+    `当前 settings 普通日记总数 ${result.totalDiaries} 篇`,
+    `当前 settings 回收站总数 ${result.totalRecycleBin} 条`,
+  ].join('\n');
+}
+
+function createSettingsUi() {
+  return `
+    <div class="diary-migration-tool-settings">
+      <h3>日记本数据迁移工具</h3>
+      <div class="diary-migration-row">
+        <label for="diary-migration-mode">迁移模式</label>
+        <select id="diary-migration-mode" class="text_pole">
+          <option value="${MODES.settingsToFiles}">settings -> 独立文件存储</option>
+          <option value="${MODES.worldToSettings}">世界书 -> settings</option>
+        </select>
+      </div>
+      <div class="diary-migration-panel">
+        <div class="diary-migration-panel-title">检查结果</div>
+        <pre id="diary-migration-check"></pre>
+      </div>
+      <div class="diary-migration-actions">
+        <button id="diary-migration-refresh" class="menu_button">重新检查</button>
+        <button id="diary-migration-run" class="menu_button">执行迁移</button>
+      </div>
+      <pre id="diary-migration-result" class="info"></pre>
+    </div>
+  `;
+}
+
+jQuery(() => {
+  console.log('[Diary Migration Tool] Loaded');
+
+  if ($('.diary-migration-tool-settings').length === 0) {
+    $('#extensions_settings2').append(createSettingsUi());
+  }
+
+  updateCheckResult();
+
+  $('#diary-migration-mode').off(`change.${extensionName}`).on(`change.${extensionName}`, updateCheckResult);
+  $('#diary-migration-refresh').off(`click.${extensionName}`).on(`click.${extensionName}`, updateCheckResult);
+  $('#diary-migration-run').off(`click.${extensionName}`).on(`click.${extensionName}`, async function () {
+    const $button = $(this);
+    $button.prop('disabled', true).text('迁移中...');
+    setResult('正在执行，请稍等。', 'info');
+
+    try {
+      const resultText = await runSelectedMigration();
+      updateCheckResult();
+      setResult(resultText, 'success');
+      toastr.success('迁移完成', '日记本迁移工具');
+    } catch (error) {
+      console.error('[Diary Migration Tool] Migration failed:', error);
+      setResult(`迁移失败：${error.message}`, 'error');
+      toastr.error(`迁移失败：${error.message}`, '日记本迁移工具');
+    } finally {
+      $button.prop('disabled', false).text('执行迁移');
+    }
+  });
 });

@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Etaf Cisky",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "homePage": "https://github.com/EtafCisky/diary-migration-tool",
   "auto_update": false
 }
